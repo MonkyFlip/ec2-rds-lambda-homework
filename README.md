@@ -31,9 +31,39 @@ Internet
 
 ---
 
-## PASO 1 — Crear la función Lambda
+## PASO 1 — Configurar Security Groups
 
-### 1.1 Crear la función
+Este paso se hace antes que todo. Sin las reglas correctas, nada conecta.
+
+### 1.1 Security Group de la EC2
+
+Ve a **EC2 → Security Groups**, selecciona el SG de tu instancia EC2 → **Edit inbound rules**. Agrega las siguientes reglas si no existen:
+
+| Type | Port | Source | Para qué |
+|---|---|---|---|
+| SSH | 22 | 0.0.0.0/0 | Conectarte por terminal al servidor |
+| HTTP | 80 | 0.0.0.0/0 | Tráfico web a través de Nginx |
+| HTTPS | 443 | 0.0.0.0/0 | Tráfico web seguro (opcional) |
+
+Clic en **Save rules**. Anota el **Security Group ID** de tu EC2 (formato `sg-xxxxxxxxxxxxxxxxx`), lo necesitas en el siguiente paso.
+
+### 1.2 Security Group de la RDS
+
+Ve a **Aurora and RDS → Databases → tu-base-de-datos → Connectivity & security → VPC security groups**. Haz clic en el SG de la RDS → **Edit inbound rules**. Agrega:
+
+| Type | Port | Source | Para qué |
+|---|---|---|---|
+| MySQL/Aurora | 3306 | SG ID de tu EC2 | Solo la EC2 puede acceder a la RDS |
+
+> ⚠️ El source debe ser el **Security Group ID de la EC2** (ej: `sg-02fa28922186fa488`), no `0.0.0.0/0`. Así solo tu instancia tiene acceso a la base de datos.
+
+Clic en **Save rules**.
+
+---
+
+## PASO 2 — Crear la función Lambda
+
+### 2.1 Crear la función
 
 **Lambda → Functions → Create function**
 
@@ -46,7 +76,7 @@ Internet
 
 Clic en **Create function**.
 
-### 1.2 Pegar el código
+### 2.2 Pegar el código
 
 En la pestaña **Code**, haz clic en `lambda_function.py`, borra todo el contenido y pega:
 
@@ -65,13 +95,13 @@ def lambda_handler(event, context):
 
 Clic en **Deploy**.
 
-### 1.3 Publicar una versión
+### 2.3 Publicar una versión
 
 1. Clic en **Actions → Publish new version**
 2. Description: `v1` → **Publish**
 3. Anota el número de versión (normalmente `1`)
 
-### 1.4 Crear alias `prod`
+### 2.4 Crear alias `prod`
 
 **Configuration → Aliases → Create alias**
 
@@ -82,7 +112,7 @@ Clic en **Deploy**.
 
 Clic en **Save**.
 
-### 1.5 Crear alias `dev`
+### 2.5 Crear alias `dev`
 
 **Configuration → Aliases → Create alias**
 
@@ -95,9 +125,9 @@ Clic en **Save**.
 
 ---
 
-## PASO 2 — Crear API Gateway
+## PASO 3 — Crear API Gateway
 
-### 2.1 Crear la API
+### 3.1 Crear la API
 
 **API Gateway → Create API → REST API → Build**
 
@@ -108,11 +138,11 @@ Clic en **Save**.
 
 Clic en **Create API**.
 
-### 2.2 Crear el recurso `/hello`
+### 3.2 Crear el recurso `/hello`
 
 Con `/` seleccionado → **Create resource** → Resource name: `hello` → **Create resource**
 
-### 2.3 Crear el método GET
+### 3.3 Crear el método GET
 
 Con `/hello` seleccionado → **Create method**
 
@@ -123,9 +153,9 @@ Con `/hello` seleccionado → **Create method**
 | Lambda proxy integration | ✅ Activar |
 | Lambda function | `flask-hello` |
 
-### 2.4 Configurar el ARN con stage variable — CRÍTICO
+### 3.4 Configurar el ARN con stage variable — CRÍTICO
 
-En el campo **Lambda function**, el valor debe quedar con el ARN completo más el sufijo de stage variable:
+En el campo **Lambda function**, escribe el ARN completo con el sufijo de stage variable:
 
 ```
 arn:aws:lambda:us-east-2:TU_ACCOUNT_ID:function:flask-hello:${stageVariables.lambdaAlias}
@@ -135,20 +165,18 @@ arn:aws:lambda:us-east-2:TU_ACCOUNT_ID:function:flask-hello:${stageVariables.lam
 
 Clic en **Create method** → clic **OK** en el popup de permisos.
 
-> ℹ️ El permiso automático que genera AWS solo cubre `$LATEST`. Los aliases se configuran manualmente por CLI en el paso 2.6.
-
-### 2.5 Desplegar los stages por primera vez
+### 3.5 Desplegar los stages por primera vez
 
 **Deploy API → New stage → `prod` → Deploy**
 
 **Deploy API → New stage → `dev` → Deploy**
 
-Anota el **API ID** que aparece en la URL (los caracteres antes de `.execute-api`):
+Anota tu **API ID** desde la URL generada (los caracteres antes de `.execute-api`):
 ```
 https://TU_API_ID.execute-api.us-east-2.amazonaws.com/prod
 ```
 
-### 2.6 Configurar stage variables desde CloudShell — MÉTODO DEFINITIVO
+### 3.6 Configurar stage variables desde CloudShell
 
 Abre **CloudShell** desde la barra inferior de la consola. Reemplaza `TU_API_ID` con tu valor real.
 
@@ -181,7 +209,7 @@ aws apigateway create-deployment \
   --region $REGION
 ```
 
-### 2.7 Dar permisos a los aliases — con wildcard `/*`
+### 3.7 Dar permisos a los aliases con wildcard `/*`
 
 ```bash
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -205,9 +233,9 @@ aws lambda add-permission \
   --region $REGION
 ```
 
-> ⚠️ Es importante usar `/*` en el source ARN en lugar de `/prod/GET/hello`. El ARN específico por stage es demasiado restrictivo y falla en el test de la consola y en redeployments futuros.
+> ⚠️ Es importante usar `/*` en el source ARN. El ARN específico por stage (ej: `/prod/GET/hello`) es demasiado restrictivo y falla en el test de la consola y en redeployments futuros.
 
-### 2.8 Verificar desde CloudShell
+### 3.8 Verificar Lambda desde CloudShell
 
 ```bash
 curl https://$API_ID.execute-api.$REGION.amazonaws.com/prod/hello
@@ -221,13 +249,39 @@ Si ambos responden correctamente, Lambda y API Gateway están listos ✅
 
 ---
 
-## PASO 3 — Configurar la EC2
+## PASO 4 — Crear la base de datos en RDS
+
+RDS crea el servidor MySQL pero **no crea la base de datos automáticamente**. Debes crearla tú.
+
+Primero obtén el endpoint de tu RDS: **Aurora and RDS → Databases → tu-base → Connectivity & security → Endpoint**.
+
+Conéctate desde tu EC2 (o CloudShell):
+
+```bash
+mysql -u TU_USUARIO -p -h TU_ENDPOINT_RDS.rds.amazonaws.com
+```
+
+Dentro de MySQL:
+
+```sql
+CREATE DATABASE `TU_NOMBRE_DB`;
+SHOW DATABASES;
+EXIT;
+```
+
+> ⚠️ El nombre que uses aquí debe coincidir exactamente con `DB_NAME` en el archivo `.env` de la EC2.
+
+---
+
+## PASO 5 — Configurar la EC2
+
+Conéctate a tu instancia:
 
 ```bash
 ssh -i tu-key.pem ec2-user@<IP_PUBLICA_EC2>
 ```
 
-### 3.1 Instalar dependencias del sistema
+### 5.1 Instalar dependencias del sistema
 
 ```bash
 sudo dnf update -y
@@ -242,15 +296,18 @@ sudo dnf install -y mysql-community-server --nogpgcheck
 sudo pip3 install Flask gunicorn PyMySQL SQLAlchemy python-dotenv requests
 ```
 
-### 3.2 Crear estructura de directorios
+### 5.2 Crear directorios con permisos correctos
 
 ```bash
 sudo mkdir -p /opt/flask_app/nginx
 sudo chown -R ec2-user:ec2-user /opt/flask_app
 sudo mkdir -p /var/log/gunicorn
+sudo chown -R ec2-user:ec2-user /var/log/gunicorn
 ```
 
-### 3.3 Crear la aplicación Flask
+> ⚠️ El `chown` en `/var/log/gunicorn` es obligatorio. Si el directorio pertenece a `root`, Gunicorn falla con `Permission denied` al intentar escribir los logs y no arranca.
+
+### 5.3 Crear la aplicación Flask
 
 ```bash
 nano /opt/flask_app/app.py
@@ -309,7 +366,7 @@ if __name__ == "__main__":
 
 `Ctrl+O` → Enter → `Ctrl+X`
 
-### 3.4 Crear el archivo de variables de entorno
+### 5.4 Crear el archivo de variables de entorno
 
 ```bash
 nano /opt/flask_app/.env
@@ -330,7 +387,7 @@ LAMBDA_URL_DEV=https://TU_API_ID.execute-api.us-east-2.amazonaws.com/dev/hello
 
 `Ctrl+O` → Enter → `Ctrl+X`
 
-### 3.5 Crear el template de Nginx
+### 5.5 Crear el template de Nginx
 
 ```bash
 nano /opt/flask_app/nginx/flask_app.conf.tpl
@@ -357,9 +414,7 @@ server {
 
 `Ctrl+O` → Enter → `Ctrl+X`
 
-### 3.6 Crear el script de auto-detección de IP
-
-Este script detecta la IP pública en cada arranque usando IMDSv2 y regenera la configuración de Nginx automáticamente.
+### 5.6 Crear el script de auto-detección de IP
 
 ```bash
 sudo nano /usr/local/bin/update_ip.sh
@@ -398,7 +453,7 @@ echo "[$(date)] Nginx actualizado correctamente" >> "$LOG"
 sudo chmod +x /usr/local/bin/update_ip.sh
 ```
 
-### 3.7 Crear el servicio systemd para Gunicorn
+### 5.7 Crear el servicio systemd para Gunicorn
 
 ```bash
 sudo nano /etc/systemd/system/flask_app.service
@@ -428,7 +483,7 @@ WantedBy=multi-user.target
 
 `Ctrl+O` → Enter → `Ctrl+X`
 
-### 3.8 Crear el servicio systemd para auto-IP
+### 5.8 Crear el servicio systemd para auto-IP
 
 ```bash
 sudo nano /etc/systemd/system/update-nginx-ip.service
@@ -452,7 +507,7 @@ WantedBy=multi-user.target
 
 `Ctrl+O` → Enter → `Ctrl+X`
 
-### 3.9 Activar e iniciar todos los servicios
+### 5.9 Activar e iniciar todos los servicios
 
 ```bash
 sudo systemctl daemon-reload
@@ -462,7 +517,7 @@ sudo systemctl start nginx
 sudo systemctl start flask_app
 ```
 
-### 3.10 Verificar el estado
+### 5.10 Verificar el estado
 
 ```bash
 sudo systemctl status update-nginx-ip --no-pager
@@ -476,19 +531,7 @@ Los tres servicios deben aparecer en verde como `active`.
 
 ---
 
-## PASO 4 — Verificar conexión con RDS
-
-El **Security Group** de RDS debe tener una regla de entrada en **puerto 3306** cuyo origen sea el Security Group de la EC2 (no `0.0.0.0/0`).
-
-```bash
-mysql -u TU_USUARIO -p -h TU_ENDPOINT_RDS.rds.amazonaws.com
-```
-
-Si conecta, escribe `exit` para salir.
-
----
-
-## PASO 5 — Pruebas finales
+## PASO 6 — Pruebas finales
 
 ```bash
 IP_EC2="IP_PUBLICA_DE_TU_EC2"
@@ -515,7 +558,7 @@ curl http://$IP_EC2/lambda/dev
 
 ## 🔄 Comportamiento al reiniciar la EC2
 
-Cuando la instancia obtiene una nueva IP pública, no es necesario hacer nada manualmente. El servicio `update-nginx-ip` corre automáticamente antes de que Nginx y Flask arranquen.
+Cuando la instancia obtiene una nueva IP pública, no hay que hacer nada manualmente.
 
 ```
 Boot EC2
@@ -525,9 +568,8 @@ Boot EC2
   └─[3]─► flask_app.service         → Gunicorn escucha en :8000
 ```
 
-Para forzar actualización de IP sin reiniciar:
-
 ```bash
+# Forzar actualización de IP sin reiniciar la instancia
 sudo /usr/local/bin/update_ip.sh
 ```
 
@@ -555,27 +597,27 @@ sudo journalctl -u update-nginx-ip -f
 
 | Síntoma | Causa | Solución |
 |---|---|---|
-| `/lambda/prod` devuelve `Internal server error` | ARN sin `:${stageVariables.lambdaAlias}` | Editar Integration Request con el ARN completo y redesplegar |
-| `/lambda/prod` devuelve `Internal server error` después de editar el ARN | Falta redesplegar tras el cambio | `aws apigateway create-deployment --rest-api-id TU_API_ID --stage-name prod` |
-| `Invalid permissions on Lambda function` en los logs | Source ARN demasiado restrictivo | Recrear permisos con `/*` en lugar de `/prod/GET/hello` |
-| `/db-check` devuelve `db_connected: false` | Security Group de RDS no permite tráfico desde EC2 | Agregar regla inbound puerto 3306 desde el SG de la EC2 |
+| SSH: Connection timed out | Puerto 22 no abierto en el SG de la EC2 | Agregar regla SSH en el SG de la EC2 |
+| `/lambda/prod` → `Internal server error` | ARN sin `:${stageVariables.lambdaAlias}` | Editar Integration Request con el ARN completo y redesplegar |
+| `Invalid permissions on Lambda function` | Source ARN demasiado restrictivo | Recrear permisos con `/*` en lugar de `/prod/GET/hello` |
+| `/db-check` → `timed out` | SG de RDS no permite tráfico desde la EC2 | Agregar regla MySQL/3306 en el SG de la RDS con source = SG de la EC2 |
+| `/db-check` → `Unknown database` | La base de datos no fue creada en MySQL | Conectarse a RDS y ejecutar `CREATE DATABASE nombre_db` |
+| Gunicorn no arranca → `Permission denied` | `/var/log/gunicorn` pertenece a root | `sudo chown -R ec2-user:ec2-user /var/log/gunicorn` |
 | Flask no arranca | Error en `.env` o `app.py` | `sudo journalctl -u flask_app -n 50` |
 | IP no se detecta | IMDSv2 deshabilitado | EC2 → Actions → Modify instance metadata options → habilitar IMDSv2 |
 
 ---
 
-## 🔁 Resetear permisos de Lambda (si es necesario)
+## 🔁 Resetear permisos de Lambda
 
 ```bash
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 API_ID="TU_API_ID"
 REGION="us-east-2"
 
-# Eliminar permisos existentes
 aws lambda remove-permission --function-name "flask-hello:prod" --statement-id "apigw-invoke-prod" --region $REGION
 aws lambda remove-permission --function-name "flask-hello:dev"  --statement-id "apigw-invoke-dev"  --region $REGION
 
-# Recrear con wildcard
 aws lambda add-permission \
   --function-name "flask-hello:prod" \
   --statement-id "apigw-invoke-prod" \
@@ -593,7 +635,7 @@ aws lambda add-permission \
   --region $REGION
 ```
 
-## 🔁 Redesplegar API Gateway (si es necesario)
+## 🔁 Redesplegar API Gateway
 
 ```bash
 API_ID="TU_API_ID"
@@ -603,17 +645,13 @@ aws apigateway update-stage \
   --rest-api-id $API_ID --stage-name prod \
   --patch-operations op=replace,path=/variables/lambdaAlias,value=prod \
   --region $REGION
-
-aws apigateway create-deployment \
-  --rest-api-id $API_ID --stage-name prod --region $REGION
+aws apigateway create-deployment --rest-api-id $API_ID --stage-name prod --region $REGION
 
 aws apigateway update-stage \
   --rest-api-id $API_ID --stage-name dev \
   --patch-operations op=replace,path=/variables/lambdaAlias,value=dev \
   --region $REGION
-
-aws apigateway create-deployment \
-  --rest-api-id $API_ID --stage-name dev --region $REGION
+aws apigateway create-deployment --rest-api-id $API_ID --stage-name dev --region $REGION
 ```
 
 ---
@@ -635,8 +673,16 @@ aws apigateway create-deployment \
 |---|---|
 | `DB_HOST` | `db.xxxxxx.us-east-2.rds.amazonaws.com` |
 | `DB_PORT` | `3306` |
-| `DB_NAME` | `flask_db` |
+| `DB_NAME` | `nombre_de_tu_db` |
 | `DB_USER` | `admin` |
-| `DB_PASSWORD` | `mi_password` |
+| `DB_PASSWORD` | `tu_password` |
 | `LAMBDA_URL_PROD` | `https://TU_API_ID.execute-api.us-east-2.amazonaws.com/prod/hello` |
 | `LAMBDA_URL_DEV` | `https://TU_API_ID.execute-api.us-east-2.amazonaws.com/dev/hello` |
+
+### Puertos requeridos
+
+| Recurso | Puerto | Origen |
+|---|---|---|
+| EC2 (SSH) | 22 | 0.0.0.0/0 |
+| EC2 (HTTP) | 80 | 0.0.0.0/0 |
+| RDS (MySQL) | 3306 | SG de la EC2 |
